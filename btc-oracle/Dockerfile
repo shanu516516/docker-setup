@@ -1,8 +1,9 @@
 FROM golang:1.22 AS builder
 
 RUN git clone -b fee-by-judge https://github.com/twilight-project/btc-oracle.git /app
+RUN git clone -b clearingv03 https://github.com/twilight-project/nyks.git /nyks
 WORKDIR /app
-RUN go build -o btc-oracle .
+RUN go mod tidy && go build -o btc-oracle .
 
 FROM ubuntu:22.04
 
