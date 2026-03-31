@@ -1,0 +1,369 @@
+version: "3.8"
+
+x-btc-oracle: &btc-oracle-base
+  build:
+    context: .
+    dockerfile: btc-oracle/Dockerfile
+  volumes:
+    - testnet-data:/testnet
+  networks:
+    - nyks-testnet
+  restart: unless-stopped
+
+x-tmkms: &tmkms-base
+  build:
+    context: ./tmkms
+    dockerfile: Dockerfile
+  volumes:
+    - testnet-data:/testnet
+    - tmkms-data:/tmkms
+  networks:
+    - nyks-testnet
+  restart: unless-stopped
+
+x-validator: &validator-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  volumes:
+    - testnet-data:/testnet
+  networks:
+    - nyks-testnet
+  restart: unless-stopped
+
+services:
+  # ---- Bitcoin Regtest ----
+  bitcoin:
+    image: ruimarinho/bitcoin-core:latest
+    command:
+      - -conf=/bitcoin/.bitcoin/bitcoin.conf
+    volumes:
+      - bitcoin-data:/bitcoin/.bitcoin
+      - ./bitcoin/bitcoin.conf:/bitcoin/.bitcoin/bitcoin.conf:ro
+    ports:
+      - "18443:18443"
+    networks:
+      - nyks-testnet
+    restart: unless-stopped
+
+  # ---- Bitcoin Wallet Setup ----
+  bitcoin-init:
+    image: ruimarinho/bitcoin-core:latest
+    entrypoint: /scripts/setup-wallets.sh
+    volumes:
+      - ./bitcoin/setup-wallets.sh:/scripts/setup-wallets.sh:ro
+    depends_on:
+      - bitcoin
+    networks:
+      - nyks-testnet
+    restart: "no"
+
+  # ---- PostgreSQL for Forkscanner ----
+  postgres:
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_USER: forkscanner
+      POSTGRES_PASSWORD: forkscanner
+      POSTGRES_DB: forkscanner
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - nyks-testnet
+    restart: unless-stopped
+
+  # ---- Forkscanner ----
+  forkscanner:
+    build:
+      context: ./forkscanner
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://forkscanner:forkscanner@postgres/forkscanner
+      RPC_USER: bitcoin
+      RPC_PASS: pass
+    ports:
+      - "8339:8339"
+      - "8340:8340"
+    depends_on:
+      - bitcoin
+      - postgres
+    networks:
+      - nyks-testnet
+    restart: unless-stopped
+
+  # ---- Nyks Chain ----
+  init:
+    <<: *validator-base
+    entrypoint: /scripts/setup-testnet.sh
+    restart: "no"
+
+  validator-sfo:
+    <<: *validator-base
+    environment:
+      NODE_NAME: validator-sfo
+    ports:
+      - "1317:1317"
+      - "26657:26657"
+      - "26656:26656"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  validator-nyc:
+    <<: *validator-base
+    environment:
+      NODE_NAME: validator-nyc
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  validator-lon:
+    <<: *validator-base
+    environment:
+      NODE_NAME: validator-lon
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  validator-sgp:
+    <<: *validator-base
+    environment:
+      NODE_NAME: validator-sgp
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  validator-tor:
+    <<: *validator-base
+    environment:
+      NODE_NAME: validator-tor
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  validator-fra:
+    <<: *validator-base
+    environment:
+      NODE_NAME: validator-fra
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  # ---- Sentry Nodes ----
+  sentry-1:
+    <<: *validator-base
+    environment:
+      NODE_NAME: sentry-1
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  sentry-2:
+    <<: *validator-base
+    environment:
+      NODE_NAME: sentry-2
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  # ---- TMKMS (one per validator) ----
+  tmkms-sfo:
+    <<: *tmkms-base
+    environment:
+      NODE_NAME: validator-sfo
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  tmkms-nyc:
+    <<: *tmkms-base
+    environment:
+      NODE_NAME: validator-nyc
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  tmkms-lon:
+    <<: *tmkms-base
+    environment:
+      NODE_NAME: validator-lon
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  tmkms-sgp:
+    <<: *tmkms-base
+    environment:
+      NODE_NAME: validator-sgp
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  tmkms-tor:
+    <<: *tmkms-base
+    environment:
+      NODE_NAME: validator-tor
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  tmkms-fra:
+    <<: *tmkms-base
+    environment:
+      NODE_NAME: validator-fra
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  # ---- Bootstrap (set-delegate, fragment, signer-application, accept-signers) ----
+  bootstrap:
+    <<: *validator-base
+    entrypoint: /scripts/bootstrap.sh
+    restart: "no"
+    depends_on:
+      validator-sfo:
+        condition: service_started
+      validator-nyc:
+        condition: service_started
+      validator-lon:
+        condition: service_started
+      validator-sgp:
+        condition: service_started
+      validator-tor:
+        condition: service_started
+      validator-fra:
+        condition: service_started
+      sentry-1:
+        condition: service_started
+      sentry-2:
+        condition: service_started
+      bitcoin-init:
+        condition: service_completed_successfully
+
+  # ---- Oracle DB Init ----
+  oracle-db-init:
+    image: postgres:14-alpine
+    entrypoint: /scripts/init-db.sh
+    volumes:
+      - ./btc-oracle/init-db.sh:/scripts/init-db.sh:ro
+    environment:
+      PGHOST: postgres
+      PGUSER: forkscanner
+      PGPASSWORD: forkscanner
+    depends_on:
+      - postgres
+    networks:
+      - nyks-testnet
+    restart: "no"
+
+  # ---- BTC Oracle (one per validator) ----
+  oracle-sfo:
+    <<: *btc-oracle-base
+    environment:
+      NODE_NAME: validator-sfo
+      RUNNING_MODE: judge
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      oracle-db-init:
+        condition: service_completed_successfully
+      bitcoin-init:
+        condition: service_completed_successfully
+      validator-sfo:
+        condition: service_started
+      forkscanner:
+        condition: service_started
+
+  oracle-nyc:
+    <<: *btc-oracle-base
+    environment:
+      NODE_NAME: validator-nyc
+      RUNNING_MODE: signer
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      oracle-db-init:
+        condition: service_completed_successfully
+      bitcoin-init:
+        condition: service_completed_successfully
+      validator-nyc:
+        condition: service_started
+      forkscanner:
+        condition: service_started
+
+  oracle-lon:
+    <<: *btc-oracle-base
+    environment:
+      NODE_NAME: validator-lon
+      RUNNING_MODE: signer
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      oracle-db-init:
+        condition: service_completed_successfully
+      bitcoin-init:
+        condition: service_completed_successfully
+      validator-lon:
+        condition: service_started
+      forkscanner:
+        condition: service_started
+
+  oracle-sgp:
+    <<: *btc-oracle-base
+    environment:
+      NODE_NAME: validator-sgp
+      RUNNING_MODE: signer
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      oracle-db-init:
+        condition: service_completed_successfully
+      bitcoin-init:
+        condition: service_completed_successfully
+      validator-sgp:
+        condition: service_started
+      forkscanner:
+        condition: service_started
+
+  oracle-tok:
+    <<: *btc-oracle-base
+    environment:
+      NODE_NAME: validator-tor
+      RUNNING_MODE: signer
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      oracle-db-init:
+        condition: service_completed_successfully
+      bitcoin-init:
+        condition: service_completed_successfully
+      validator-tor:
+        condition: service_started
+      forkscanner:
+        condition: service_started
+
+  oracle-fra:
+    <<: *btc-oracle-base
+    environment:
+      NODE_NAME: validator-fra
+      RUNNING_MODE: signer
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+      oracle-db-init:
+        condition: service_completed_successfully
+      bitcoin-init:
+        condition: service_completed_successfully
+      validator-fra:
+        condition: service_started
+      forkscanner:
+        condition: service_started
+
+volumes:
+  testnet-data:
+  bitcoin-data:
+  postgres-data:
+  tmkms-data:
+
+networks:
+  nyks-testnet:
+    driver: bridge
