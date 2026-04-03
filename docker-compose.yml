@@ -1,0 +1,272 @@
+x-validator-oracle: &validator-oracle-base
+  build:
+    context: .
+    dockerfile: btc-oracle/Dockerfile
+  volumes:
+    - testnet-data:/testnet
+  networks:
+    - nyks-testnet
+  restart: unless-stopped
+
+x-validator: &validator-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+  volumes:
+    - testnet-data:/testnet
+  networks:
+    - nyks-testnet
+  restart: unless-stopped
+
+x-tmkms: &tmkms-base
+  build:
+    context: ./tmkms
+    dockerfile: Dockerfile
+  volumes:
+    - testnet-data:/testnet
+    - tmkms-data:/tmkms
+  networks:
+    - nyks-testnet
+  restart: unless-stopped
+
+services:
+  # ---- Bitcoin Regtest ----
+  bitcoin:
+    image: ruimarinho/bitcoin-core:latest
+    command:
+      - -conf=/bitcoin/.bitcoin/bitcoin.conf
+    volumes:
+      - bitcoin-data:/bitcoin/.bitcoin
+      - ./bitcoin/bitcoin.conf:/bitcoin/.bitcoin/bitcoin.conf:ro
+    ports:
+      - "18443:18443"
+    networks:
+      - nyks-testnet
+    restart: unless-stopped
+
+  # ---- Bitcoin Wallet Setup ----
+  bitcoin-init:
+    image: ruimarinho/bitcoin-core:latest
+    entrypoint: /scripts/setup-wallets.sh
+    volumes:
+      - ./bitcoin/setup-wallets.sh:/scripts/setup-wallets.sh:ro
+    depends_on:
+      - bitcoin
+    networks:
+      - nyks-testnet
+    restart: "no"
+
+  # ---- Bitcoin Block Generator (fee estimation for forkscanner) ----
+  bitcoin-mine:
+    image: ruimarinho/bitcoin-core:latest
+    entrypoint: /scripts/mine-blocks.sh
+    volumes:
+      - ./bitcoin/mine-blocks.sh:/scripts/mine-blocks.sh:ro
+    depends_on:
+      bitcoin-init:
+        condition: service_completed_successfully
+    networks:
+      - nyks-testnet
+    restart: "no"
+
+  # ---- PostgreSQL for Forkscanner ----
+  postgres:
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_USER: forkscanner
+      POSTGRES_PASSWORD: forkscanner
+      POSTGRES_DB: forkscanner
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - nyks-testnet
+    restart: unless-stopped
+
+  # ---- Forkscanner ----
+  forkscanner:
+    build:
+      context: ./forkscanner
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://forkscanner:forkscanner@postgres/forkscanner
+      RPC_USER: bitcoin
+      RPC_PASS: pass
+    ports:
+      - "8339:8339"
+      - "8340:8340"
+    depends_on:
+      - bitcoin
+      - postgres
+    networks:
+      - nyks-testnet
+    restart: unless-stopped
+
+  # ---- Nyks Chain Init ----
+  init:
+    <<: *validator-base
+    entrypoint: /scripts/setup-testnet.sh
+    restart: "no"
+
+  # ---- Combined Validator + Oracle Nodes ----
+  # Each container runs nyksd (validator) + btc-oracle in the same process space.
+  # The entrypoint starts nyksd in background, waits for bootstrap, then starts btc-oracle.
+  validator-sfo:
+    <<: *validator-oracle-base
+    environment:
+      NODE_NAME: validator-sfo
+      RUNNING_MODE: judge
+    ports:
+      - "1317:1317"
+      - "26657:26657"
+      - "26656:26656"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  validator-nyc:
+    <<: *validator-oracle-base
+    environment:
+      NODE_NAME: validator-nyc
+      RUNNING_MODE: signer
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  validator-lon:
+    <<: *validator-oracle-base
+    environment:
+      NODE_NAME: validator-lon
+      RUNNING_MODE: signer
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  validator-sgp:
+    <<: *validator-oracle-base
+    environment:
+      NODE_NAME: validator-sgp
+      RUNNING_MODE: signer
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  validator-tor:
+    <<: *validator-oracle-base
+    environment:
+      NODE_NAME: validator-tor
+      RUNNING_MODE: signer
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  validator-fra:
+    <<: *validator-oracle-base
+    environment:
+      NODE_NAME: validator-fra
+      RUNNING_MODE: signer
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  # ---- Sentry Nodes (validator only, no oracle) ----
+  sentry-1:
+    <<: *validator-base
+    environment:
+      NODE_NAME: sentry-1
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  sentry-2:
+    <<: *validator-base
+    environment:
+      NODE_NAME: sentry-2
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  # ---- TMKMS (one per validator) ----
+  tmkms-sfo:
+    <<: *tmkms-base
+    environment:
+      NODE_NAME: validator-sfo
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  tmkms-nyc:
+    <<: *tmkms-base
+    environment:
+      NODE_NAME: validator-nyc
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  tmkms-lon:
+    <<: *tmkms-base
+    environment:
+      NODE_NAME: validator-lon
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  tmkms-sgp:
+    <<: *tmkms-base
+    environment:
+      NODE_NAME: validator-sgp
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  tmkms-tor:
+    <<: *tmkms-base
+    environment:
+      NODE_NAME: validator-tor
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  tmkms-fra:
+    <<: *tmkms-base
+    environment:
+      NODE_NAME: validator-fra
+    depends_on:
+      init:
+        condition: service_completed_successfully
+
+  # ---- Bootstrap (runs after validators are up, creates .bootstrapped flag) ----
+  bootstrap:
+    <<: *validator-base
+    entrypoint: /scripts/bootstrap.sh
+    restart: "no"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      bitcoin-init:
+        condition: service_completed_successfully
+
+  # ---- Oracle DB Init ----
+  oracle-db-init:
+    image: postgres:14-alpine
+    entrypoint: /scripts/init-db.sh
+    volumes:
+      - ./btc-oracle/init-db.sh:/scripts/init-db.sh:ro
+    environment:
+      PGHOST: postgres
+      PGUSER: forkscanner
+      PGPASSWORD: forkscanner
+    depends_on:
+      - postgres
+    networks:
+      - nyks-testnet
+    restart: "no"
+
+volumes:
+  testnet-data:
+  bitcoin-data:
+  postgres-data:
+  tmkms-data:
+
+networks:
+  nyks-testnet:
+    driver: bridge
