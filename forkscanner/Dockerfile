@@ -1,4 +1,4 @@
-FROM rust:1.85-bullseye AS builder
+FROM rust:1.86 AS builder
 
 RUN apt-get update && apt-get install -y libpq-dev && rm -rf /var/lib/apt/lists/*
 RUN cargo install diesel_cli --no-default-features --features postgres --version 2.2.12
@@ -7,7 +7,8 @@ RUN git clone https://github.com/twilight-project/forkscanner.git /forkscanner
 WORKDIR /forkscanner
 RUN cargo build --release
 
-FROM debian:bullseye-slim
+# Match glibc with rust:1.86 builder (bookworm); bullseye is too old for binaries linked to GLIBC_2.32+.
+FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y libpq5 postgresql-client && rm -rf /var/lib/apt/lists/*
 
